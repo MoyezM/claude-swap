@@ -37,17 +37,35 @@ def _window_to_json(entry: dict) -> dict:
     return out
 
 
+def _scoped_to_json(entry: dict) -> dict:
+    """Project a model-scoped rate-limit window to JSON (camelCase reset key)."""
+    out: dict = {"model": entry["model"], "pct": entry["pct"]}
+    if "group" in entry:
+        out["group"] = entry["group"]
+    if "severity" in entry:
+        out["severity"] = entry["severity"]
+    if "resets_at" in entry:
+        out["resetsAt"] = entry["resets_at"]
+    if "countdown" in entry:
+        out["countdown"] = entry["countdown"]
+    if "clock" in entry:
+        out["clock"] = entry["clock"]
+    return out
+
+
 def usage_to_json(usage: dict) -> dict:
     """Convert the internal usage dict to its camelCase JSON projection.
 
     Sub-keys are emitted only when present in the source (the API does not always
-    return every window or pay-as-you-go spend).
+    return every window, model-scoped limit, or pay-as-you-go spend).
     """
     out: dict = {}
     if "five_hour" in usage:
         out["fiveHour"] = _window_to_json(usage["five_hour"])
     if "seven_day" in usage:
         out["sevenDay"] = _window_to_json(usage["seven_day"])
+    if "scoped" in usage:
+        out["scopedLimits"] = [_scoped_to_json(s) for s in usage["scoped"]]
     if "spend" in usage:
         spend = usage["spend"]
         spend_out: dict = {

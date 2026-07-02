@@ -158,6 +158,44 @@ def request_usage_data(access_token: str) -> dict:
 
 
 
+def _scoped_limits(data: dict) -> list[dict]:
+    """Extract model-scoped rate-limit windows from the usage ``limits`` array.
+
+    A model-scoped limit (e.g. a separate weekly cap for the ``Fable`` model)
+    lives *only* in the newer ``limits`` array — the legacy top-level
+    ``seven_day_opus``/``seven_day_sonnet`` fields are always null now. Each
+    ``weekly_scoped`` entry names the model it applies to under
+    ``scope.model.display_name``. The unscoped ``session``/``weekly_all`` entries
+    duplicate ``five_hour``/``seven_day`` and are deliberately skipped here.
+
+    Returns one entry per scoped window (``model``, ``pct``, ``group``, and —
+    when the API supplies them — ``severity`` and ``resets_at``/``countdown``/
+    ``clock``), or an empty list when the API returns no scoped limits.
+    """
+    scoped: list[dict] = []
+    for limit in data.get("limits") or []:
+        if not isinstance(limit, dict) or limit.get("kind") != "weekly_scoped":
+            continue
+        scope = limit.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = model.get("display_name") if isinstance(model, dict) else None
+        pct = limit.get("percent")
+        if not name or not isinstance(pct, (int, float)):
+            continue
+        entry: dict = {
+            "model": name,
+            "pct": float(pct),
+            "group": limit.get("group") or "weekly",
+        }
+        if limit.get("severity"):
+            entry["severity"] = limit["severity"]
+        if limit.get("resets_at"):
+            entry["resets_at"] = limit["resets_at"]
+            entry["countdown"], entry["clock"] = format_reset(limit["resets_at"])
+        scoped.append(entry)
+    return scoped
+
+
 def build_usage_result(data: dict) -> dict | None:
     """Normalize raw usage API data into the structure used by the CLI."""
     _logger.debug("Usage API response: %s", json.dumps(data, indent=2))
@@ -179,6 +217,10 @@ def build_usage_result(data: dict) -> dict | None:
             d7_entry["resets_at"] = d7["resets_at"]
             d7_entry["countdown"], d7_entry["clock"] = format_reset(d7["resets_at"])
         result["seven_day"] = d7_entry
+
+    scoped = _scoped_limits(data)
+    if scoped:
+        result["scoped"] = scoped
 
     eu = data.get("extra_usage")
     if eu and eu.get("is_enabled"):
@@ -212,7 +254,9 @@ def account_headroom(usage: dict | None) -> float | None:
 
     Considers only the 5-hour and 7-day utilization windows — the two that
     actually gate requests. ``spend`` (pay-as-you-go extra-usage credits) is a
-    separate axis and is deliberately ignored. Returns the headroom of the
+    separate axis and is deliberately ignored, as are model-scoped weekly limits
+    (``scoped``, e.g. Fable), which cap only one model rather than the account.
+    Returns the headroom of the
     *binding* window (``100 - max(pct)``), so ``<= 0`` means the account is at
     or over a limit. Returns ``None`` when usage is unavailable or carries no
     window data, which callers treat as "unknown" (never auto-skipped).

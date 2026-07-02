@@ -42,6 +42,27 @@ class TestJsonHelpers:
         assert out["spend"]["used"] == 12.5
         assert out["spend"]["resetsAt"] == "2026-07-01T00:00:00Z"
 
+    def test_usage_to_json_projects_scoped_limits(self):
+        """Model-scoped limits become a camelCased scopedLimits list, always present."""
+        usage = {
+            "five_hour": {"pct": 5.0},
+            "scoped": [
+                {"model": "Fable", "pct": 86.0, "group": "weekly", "severity": "warning",
+                 "resets_at": "2026-07-05T20:59:59Z", "countdown": "3d 3h", "clock": "Jul 5 20:59"},
+                {"model": "Fable", "pct": 7.0, "group": "weekly"},
+            ],
+        }
+        out = usage_to_json(usage)
+        assert out["scopedLimits"] == [
+            {"model": "Fable", "pct": 86.0, "group": "weekly", "severity": "warning",
+             "resetsAt": "2026-07-05T20:59:59Z", "countdown": "3d 3h", "clock": "Jul 5 20:59"},
+            {"model": "Fable", "pct": 7.0, "group": "weekly"},
+        ]
+
+    def test_usage_to_json_omits_scoped_when_absent(self):
+        """No scoped windows in the source → no scopedLimits key."""
+        assert "scopedLimits" not in usage_to_json({"five_hour": {"pct": 1.0}})
+
     def test_usage_fields_variants(self):
         from claude_swap.json_output import (
             USAGE_KEYCHAIN_UNAVAILABLE,
@@ -113,6 +134,37 @@ class TestListJson:
         assert acct1["active"] is True
         assert acct1["usageStatus"] == "ok"
         assert acct1["usage"]["fiveHour"]["resetsAt"] == "2026-01-01T00:00:00Z"
+
+    def test_scoped_limits_always_in_json_regardless_of_flag(
+        self, temp_home: Path, mock_claude_config: Path,
+        sample_sequence_data: dict,
+    ):
+        """scopedLimits appears in --list --json even with show_scoped=False —
+        the flag only gates the human-readable lines, never the JSON."""
+        sample_sequence_data["accounts"]["1"]["email"] = "test@example.com"
+        active_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-active"}})
+        backup_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-backup"}})
+        usage = {
+            "five_hour": {"pct": 5.0},
+            "scoped": [{"model": "Fable", "pct": 81.0, "group": "weekly",
+                        "severity": "warning"}],
+        }
+
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_json(switcher.sequence_file, sample_sequence_data)
+
+        with patch.object(switcher, "_read_active_credentials",
+                          return_value=ActiveCredentials(active_creds, False)), \
+             patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
+             patch("claude_swap.oauth.fetch_usage_for_account", return_value=usage):
+            # Even with the human lines suppressed, JSON still carries scopedLimits.
+            payload = switcher.list_accounts(show_scoped=False, json_output=True)
+
+        acct1 = next(a for a in payload["accounts"] if a["number"] == 1)
+        assert acct1["usage"]["scopedLimits"] == [
+            {"model": "Fable", "pct": 81.0, "group": "weekly", "severity": "warning"}
+        ]
 
     def test_usage_status_no_credentials_and_unavailable(
         self, temp_home: Path, mock_claude_config: Path,

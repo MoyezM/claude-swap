@@ -134,6 +134,7 @@ Examples:
   %(prog)s --add-token sk-ant-oat01-... --email me@example.com
   %(prog)s --add-token - --slot 3
   %(prog)s --list
+  %(prog)s --list --no-scoped-limits       # hide model-scoped limits (shown by default)
   %(prog)s --switch
   %(prog)s --switch --strategy best             # switch to the account with most quota left
   %(prog)s --switch --strategy next-available   # rotate, skipping rate-limited accounts
@@ -166,6 +167,14 @@ Examples:
         "--token-status",
         action="store_true",
         help="Show OAuth token expiry state (use with --list)",
+    )
+    parser.add_argument(
+        "--no-scoped-limits",
+        action="store_true",
+        help=(
+            "Hide model-scoped weekly rate limits (e.g. Fable) from --list/--status "
+            "output. They are shown by default; --json always includes them."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -295,6 +304,9 @@ Examples:
     if args.token_status and not args.list:
         parser.error("--token-status can only be used with --list")
 
+    if args.no_scoped_limits and not (args.list or args.status):
+        parser.error("--no-scoped-limits can only be used with --list or --status")
+
     if args.json and not (args.list or args.status or args.switch or args.switch_to):
         parser.error(
             "--json can only be used with --list, --status, --switch, or --switch-to"
@@ -363,6 +375,7 @@ Examples:
         elif args.list:
             payload = switcher.list_accounts(
                 show_token_status=args.token_status,
+                show_scoped=not args.no_scoped_limits,
                 json_output=args.json,
             )
         elif args.switch:
@@ -372,7 +385,9 @@ Examples:
                 args.switch_to, json_output=args.json, force=args.force
             )
         elif args.status:
-            payload = switcher.status(json_output=args.json)
+            payload = switcher.status(
+                show_scoped=not args.no_scoped_limits, json_output=args.json
+            )
         elif args.purge:
             switcher.purge()
         elif args.export:

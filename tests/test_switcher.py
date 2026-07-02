@@ -27,6 +27,7 @@ from claude_swap.switcher import (
     ClaudeAccountSwitcher,
     SECURITY_SERVICE,
     SETUP_TOKEN_SCOPES,
+    _format_usage_lines,
 )
 
 
@@ -521,6 +522,50 @@ class TestStatusCache:
         assert cached["2"] == {"five_hour": {"pct": 80}}
 
 
+class TestFormatUsageLines:
+    """Test the pure usage-line formatter, including the scoped-limit toggle."""
+
+    def _usage_with_scoped(self):
+        return {
+            "five_hour": {"pct": 5.0},
+            "seven_day": {"pct": 43.0, "countdown": "3d 3h", "clock": "Jul 5 20:59"},
+            "scoped": [{
+                "model": "Fable", "pct": 81.0, "group": "weekly", "severity": "warning",
+                "resets_at": "2026-07-05T20:59:59Z", "countdown": "3d 3h", "clock": "Jul 5 20:59",
+            }],
+        }
+
+    def test_scoped_hidden_by_default(self):
+        """Without the flag, no Fable line and no scoped data leaks in."""
+        lines = _format_usage_lines(self._usage_with_scoped())
+        assert not any("Fable" in line for line in lines)
+        assert lines == ["5h:   5%", "7d:  43%   resets Jul 5 20:59   in 3d 3h"]
+
+    def test_scoped_shown_when_enabled(self):
+        """With show_scoped, the Fable weekly line is appended last."""
+        lines = _format_usage_lines(self._usage_with_scoped(), show_scoped=True)
+        assert lines[-1] == "Fable 7d:  81%   resets Jul 5 20:59   in 3d 3h"
+
+    def test_scoped_without_reset_omits_clock(self):
+        usage = {"five_hour": {"pct": 5.0}, "scoped": [{"model": "Fable", "pct": 7.0, "group": "weekly"}]}
+        lines = _format_usage_lines(usage, show_scoped=True)
+        assert lines[-1] == "Fable 7d:   7%"
+
+    def test_scoped_flag_no_scoped_data_is_noop(self):
+        """Passing show_scoped when the API returned no scoped limits changes nothing."""
+        usage = {"five_hour": {"pct": 5.0}, "seven_day": {"pct": 43.0}}
+        assert _format_usage_lines(usage, show_scoped=True) == _format_usage_lines(usage)
+
+    def test_unknown_group_label_falls_back(self):
+        """An unmapped group renders the raw group; an empty group drops to just the model."""
+        usage = {"scoped": [
+            {"model": "Fable", "pct": 7.0, "group": "monthly"},
+            {"model": "Fable", "pct": 8.0, "group": ""},
+        ]}
+        lines = _format_usage_lines(usage, show_scoped=True)
+        assert lines == ["Fable monthly:   7%", "Fable:   8%"]
+
+
 class TestListAccountsUsage:
     """Test list_accounts shows usage info."""
 
@@ -556,6 +601,66 @@ class TestListAccountsUsage:
         assert "└ 7d:" in output
         assert "10%" in output
         assert "50%" in output
+
+    def _scoped_usage_mock_response(self):
+        usage_response = {
+            "five_hour": {"utilization": 10.0, "resets_at": None},
+            "seven_day": {"utilization": 43.0, "resets_at": None},
+            "limits": [
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 81,
+                 "severity": "warning", "resets_at": None,
+                 "scope": {"model": {"display_name": "Fable"}}},
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(usage_response).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        return mock_response
+
+    def test_list_shows_scoped_limits_by_default(
+        self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict, capsys
+    ):
+        """By default --list appends a Fable line, so 7d becomes ├ and Fable is └."""
+        sample_sequence_data["accounts"]["1"]["email"] = "test@example.com"
+        active_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-active"}})
+        backup_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-backup"}})
+
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_json(switcher.sequence_file, sample_sequence_data)
+
+        with patch.object(switcher, "_read_credentials", return_value=active_creds), \
+             patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
+             patch("claude_swap.oauth.urllib.request.urlopen",
+                   return_value=self._scoped_usage_mock_response()):
+            switcher.list_accounts()  # default: show_scoped=True
+
+        output = capsys.readouterr().out
+        assert "├ 7d:  43%" in output
+        assert "└ Fable 7d:  81%" in output
+
+    def test_list_no_scoped_limits_hides_fable(
+        self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict, capsys
+    ):
+        """show_scoped=False omits the Fable line, leaving 7d as the last row."""
+        sample_sequence_data["accounts"]["1"]["email"] = "test@example.com"
+        active_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-active"}})
+        backup_creds = json.dumps({"claudeAiOauth": {"accessToken": "sk-backup"}})
+
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_json(switcher.sequence_file, sample_sequence_data)
+
+        with patch.object(switcher, "_read_credentials", return_value=active_creds), \
+             patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
+             patch("claude_swap.oauth.urllib.request.urlopen",
+                   return_value=self._scoped_usage_mock_response()):
+            switcher.list_accounts(show_scoped=False)
+
+        output = capsys.readouterr().out
+        assert "Fable" not in output
+        assert "└ 7d:  43%" in output
 
     def test_list_shows_usage_null_reset(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict, capsys

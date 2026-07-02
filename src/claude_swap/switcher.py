@@ -80,7 +80,10 @@ SETUP_TOKEN_SCOPES = ("user:inference",)
 _USAGE_CACHE_TTL = 15  # seconds
 
 
-def _format_usage_lines(usage: dict) -> list[str]:
+_SCOPED_WINDOW_LABELS = {"weekly": "7d", "session": "5h"}
+
+
+def _format_usage_lines(usage: dict, show_scoped: bool = False) -> list[str]:
     lines: list[str] = []
     spend = usage.get("spend")
     if spend:
@@ -103,6 +106,14 @@ def _format_usage_lines(usage: dict) -> list[str]:
             lines.append(f"7d: {d7['pct']:>3.0f}%   resets {d7['clock']:<12}  in {d7['countdown']}")
         else:
             lines.append(f"7d: {d7['pct']:>3.0f}%")
+    if show_scoped:
+        for s in usage.get("scoped", []):
+            window = _SCOPED_WINDOW_LABELS.get(s.get("group", "weekly"), s.get("group") or "")
+            label = f"{s['model']} {window}".rstrip() + ":"
+            if "clock" in s:
+                lines.append(f"{label} {s['pct']:>3.0f}%   resets {s['clock']:<12}  in {s['countdown']}")
+            else:
+                lines.append(f"{label} {s['pct']:>3.0f}%")
     return lines
 
 
@@ -1474,6 +1485,7 @@ class ClaudeAccountSwitcher:
     def list_accounts(
         self,
         show_token_status: bool = False,
+        show_scoped: bool = True,
         json_output: bool = False,
     ) -> dict | None:
         """List all managed accounts.
@@ -1519,7 +1531,7 @@ class ClaudeAccountSwitcher:
             elif usage is None:
                 print(f"     {dimmed('usage unavailable')}")
             else:
-                lines = _format_usage_lines(usage)
+                lines = _format_usage_lines(usage, show_scoped)
                 for j, line in enumerate(lines):
                     connector = "└" if j == len(lines) - 1 else "├"
                     print(f"     {dimmed(connector)} {muted(line)}")
@@ -1638,7 +1650,9 @@ class ClaudeAccountSwitcher:
             "totalManagedAccounts": len(data.get("accounts", {})),
         }
 
-    def status(self, json_output: bool = False) -> dict | None:
+    def status(
+        self, show_scoped: bool = True, json_output: bool = False
+    ) -> dict | None:
         """Display current account status (or return the schema-v1 payload)."""
         if json_output:
             return self._build_status_payload()
@@ -1669,7 +1683,7 @@ class ClaudeAccountSwitcher:
             print(f"  {dimmed(f'Total managed accounts: {total}')}")
             usage = self._active_account_usage(account_num, current_email)
             if isinstance(usage, dict):
-                lines = _format_usage_lines(usage)
+                lines = _format_usage_lines(usage, show_scoped)
                 for j, line in enumerate(lines):
                     connector = "└" if j == len(lines) - 1 else "├"
                     print(f"  {dimmed(connector)} {muted(line)}")

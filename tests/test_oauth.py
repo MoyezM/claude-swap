@@ -277,6 +277,134 @@ class TestFetchUsage:
         assert result["seven_day"]["pct"] == 61.0
         assert "spend" not in result
 
+    # -- Model-scoped weekly limits (the ``limits`` array, e.g. Fable) --------
+
+    @staticmethod
+    def _scoped_response(scoped_entry, resets_at=None):
+        """A minimal usage response carrying one ``weekly_scoped`` limit.
+
+        Also includes the unscoped ``session``/``weekly_all`` entries the real
+        API emits, so tests prove those are skipped.
+        """
+        return {
+            "five_hour": {"utilization": 10.0, "resets_at": None},
+            "seven_day": {"utilization": 20.0, "resets_at": resets_at},
+            "limits": [
+                {"kind": "session", "group": "session", "percent": 10},
+                {"kind": "weekly_all", "group": "weekly", "percent": 20},
+                scoped_entry,
+            ],
+        }
+
+    def test_scoped_weekly_limit_parsed(self):
+        """A weekly_scoped Fable entry becomes result['scoped'] with model+pct+group."""
+        from datetime import timedelta
+        fixed_now = datetime(2026, 3, 23, 12, 0, 0, tzinfo=timezone.utc)
+        future = fixed_now + timedelta(hours=1)
+        response = self._scoped_response({
+            "kind": "weekly_scoped",
+            "group": "weekly",
+            "percent": 86,
+            "severity": "warning",
+            "resets_at": future.isoformat(),
+            "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+        })
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(response).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch("claude_swap.oauth.urllib.request.urlopen", return_value=mock_response), \
+             patch("claude_swap.oauth.datetime") as mock_dt:
+            mock_dt.fromisoformat = datetime.fromisoformat
+            mock_dt.now.return_value = fixed_now
+            result = oauth.fetch_usage("sk-test-token")
+
+        assert result is not None
+        # The unscoped session/weekly_all rows never leak into ``scoped``.
+        assert len(result["scoped"]) == 1
+        entry = result["scoped"][0]
+        assert entry["model"] == "Fable"
+        assert entry["pct"] == 86.0
+        assert entry["group"] == "weekly"
+        assert entry["severity"] == "warning"
+        assert entry["resets_at"] == future.isoformat()
+        assert entry["countdown"] == "1h 0m"
+        assert "clock" in entry  # local-tz formatted; exact value is machine-dependent
+
+    def test_scoped_limit_null_resets_at(self):
+        """A scoped entry with no resets_at keeps pct/model but omits clock/countdown."""
+        result = self._fetch_with_response(self._scoped_response({
+            "kind": "weekly_scoped",
+            "group": "weekly",
+            "percent": 7,
+            "severity": "normal",
+            "resets_at": None,
+            "scope": {"model": {"display_name": "Fable"}},
+        }))
+        assert result is not None
+        entry = result["scoped"][0]
+        assert entry["model"] == "Fable"
+        assert entry["pct"] == 7.0
+        assert entry["severity"] == "normal"
+        assert "clock" not in entry
+        assert "countdown" not in entry
+
+    def test_no_limits_array_means_no_scoped(self):
+        """A legacy response without a ``limits`` array yields no scoped key."""
+        result = self._fetch_with_response({
+            "five_hour": {"utilization": 22.0, "resets_at": None},
+            "seven_day": {"utilization": 61.0, "resets_at": None},
+        })
+        assert result is not None
+        assert "scoped" not in result
+
+    def test_unscoped_limits_only_means_no_scoped(self):
+        """When ``limits`` holds only session/weekly_all rows, nothing is scoped."""
+        result = self._fetch_with_response({
+            "five_hour": {"utilization": 22.0, "resets_at": None},
+            "seven_day": {"utilization": 61.0, "resets_at": None},
+            "limits": [
+                {"kind": "session", "group": "session", "percent": 5},
+                {"kind": "weekly_all", "group": "weekly", "percent": 61},
+            ],
+        })
+        assert result is not None
+        assert "scoped" not in result
+
+    def test_malformed_scoped_entries_skipped(self):
+        """weekly_scoped rows missing model name or percent are dropped, not raised."""
+        result = self._fetch_with_response({
+            "five_hour": {"utilization": 1.0, "resets_at": None},
+            "limits": [
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 50, "scope": None},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 50,
+                 "scope": {"model": None}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": None,
+                 "scope": {"model": {"display_name": "Fable"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 33,
+                 "scope": {"model": {"display_name": "Fable"}}},
+            ],
+        })
+        assert result is not None
+        # Only the last, well-formed entry survives.
+        assert [s["pct"] for s in result["scoped"]] == [33.0]
+
+    def test_multiple_scoped_limits_parsed_in_order(self):
+        """More than one weekly_scoped entry: all are parsed, source order preserved."""
+        result = self._fetch_with_response({
+            "five_hour": {"utilization": 1.0, "resets_at": None},
+            "limits": [
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 81,
+                 "scope": {"model": {"display_name": "Fable"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 42,
+                 "scope": {"model": {"display_name": "Opus"}}},
+            ],
+        })
+        assert result is not None
+        assert [(s["model"], s["pct"]) for s in result["scoped"]] == [
+            ("Fable", 81.0), ("Opus", 42.0),
+        ]
+
 
 class TestRefreshOAuthCredentials:
     """Test direct OAuth refresh requests."""

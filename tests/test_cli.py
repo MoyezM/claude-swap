@@ -133,7 +133,82 @@ class TestCLI:
 
         switcher_cls.return_value.list_accounts.assert_called_once_with(
             show_token_status=True,
+            show_scoped=True,
             json_output=False,
+        )
+
+    def test_no_scoped_limits_flag_requires_list_or_status(self, capsys):
+        """--no-scoped-limits is only accepted alongside --list or --status."""
+        with patch.object(sys, "argv", ["claude-swap", "--no-scoped-limits", "--switch"]):
+            with pytest.raises(SystemExit) as excinfo:
+                cli.main()
+        assert excinfo.value.code == 2
+        assert "--no-scoped-limits can only be used with --list or --status" in capsys.readouterr().err
+
+    def test_scoped_limits_shown_by_default_in_list(self):
+        """Bare --list shows scoped limits: list_accounts(show_scoped=True)."""
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["claude-swap", "--list"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None):
+            cli.main()
+
+        switcher_cls.return_value.list_accounts.assert_called_once_with(
+            show_token_status=False,
+            show_scoped=True,
+            json_output=False,
+        )
+
+    def test_no_scoped_limits_hides_in_list(self):
+        """--list --no-scoped-limits calls list_accounts(show_scoped=False)."""
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["claude-swap", "--list", "--no-scoped-limits"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None):
+            cli.main()
+
+        switcher_cls.return_value.list_accounts.assert_called_once_with(
+            show_token_status=False,
+            show_scoped=False,
+            json_output=False,
+        )
+
+    def test_scoped_limits_shown_by_default_in_status(self):
+        """Bare --status shows scoped limits: status(show_scoped=True)."""
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["claude-swap", "--status"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None):
+            cli.main()
+
+        switcher_cls.return_value.status.assert_called_once_with(
+            show_scoped=True, json_output=False,
+        )
+
+    def test_no_scoped_limits_forwarded_to_status(self):
+        """--status --no-scoped-limits calls status(show_scoped=False)."""
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["claude-swap", "--status", "--no-scoped-limits"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None):
+            cli.main()
+
+        switcher_cls.return_value.status.assert_called_once_with(
+            show_scoped=False, json_output=False,
+        )
+
+    def test_no_scoped_limits_allowed_with_json(self):
+        """--no-scoped-limits + --json is accepted (scoped limits are always in JSON)."""
+        payload = {"schemaVersion": 1, "activeAccountNumber": None, "accounts": []}
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["claude-swap", "--list", "--no-scoped-limits", "--json"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None):
+            switcher_cls.return_value.list_accounts.return_value = payload
+            cli.main()
+
+        switcher_cls.return_value.list_accounts.assert_called_once_with(
+            show_token_status=False, show_scoped=False, json_output=True,
         )
 
     def test_strategy_best_requires_switch(self, capsys):
@@ -569,7 +644,7 @@ class TestJsonOutputCli:
             cli.main()
 
         switcher_cls.return_value.list_accounts.assert_called_once_with(
-            show_token_status=False, json_output=True,
+            show_token_status=False, show_scoped=True, json_output=True,
         )
         out = capsys.readouterr().out
         assert json.loads(out) == payload  # exactly one JSON object, no extra text

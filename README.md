@@ -98,7 +98,8 @@ This will update the stored credentials without creating a duplicate.
 
 ```bash
 cswap run 2                     # Run an account in this terminal only (session mode)
-cswap --list                    # Show all accounts with 5h/7d usage and reset times
+cswap --list                    # Accounts with 5h/7d + model-scoped (e.g. Fable) usage
+cswap --list --no-scoped-limits # Same, but hide the model-scoped limit lines
 cswap --status                  # Show current account
 cswap --add-account --slot 3    # Add account to a specific slot (prompts before overwrite)
 cswap --remove-account 2        # Remove an account
@@ -106,6 +107,11 @@ cswap --tui                     # Launch the interactive arrow-key menu
 cswap --upgrade                 # Upgrade claude-swap to the latest version
 cswap --purge                   # Remove all claude-swap data
 ```
+
+`--list`/`--status` show the 5-hour and 7-day usage windows, plus any weekly limit
+scoped to a specific model (for example **Fable**) as extra lines like `Fable 7d: 81% …`.
+Pass `--no-scoped-limits` to hide those and keep the output compact. In `--json` output
+the scoped limits are always present under `usage.scopedLimits`, regardless of the flag.
 
 ## Tips
 
@@ -169,12 +175,14 @@ cswap --switch-to 2 --json
   "accounts": [
     { "number": 2, "email": "you@example.com", "active": true, "usageStatus": "ok",
       "usage": { "fiveHour": { "pct": 25.0, "resetsAt": "2026-06-22T23:29:59Z" },
-                 "sevenDay": { "pct": 16.0, "resetsAt": "2026-06-26T17:59:59Z" } } }
+                 "sevenDay": { "pct": 16.0, "resetsAt": "2026-06-26T17:59:59Z" },
+                 "scopedLimits": [ { "model": "Fable", "pct": 81.0, "group": "weekly",
+                                     "severity": "warning", "resetsAt": "2026-06-26T17:59:59Z" } ] } }
   ]
 }
 ```
 
-Every payload carries a `schemaVersion` (currently `1`); on a handled error stdout is `{"schemaVersion":1,"error":{...}}` with a non-zero exit code. `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "reason": …}`.
+Every payload carries a `schemaVersion` (currently `1`); on a handled error stdout is `{"schemaVersion":1,"error":{...}}` with a non-zero exit code. `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "reason": …}`. `usage.scopedLimits` (present whenever the API reports a model-scoped weekly limit, such as **Fable**) is an additive field — it appears in JSON regardless of the `--no-scoped-limits` flag, which only toggles the human-readable lines.
 
 </details>
 
